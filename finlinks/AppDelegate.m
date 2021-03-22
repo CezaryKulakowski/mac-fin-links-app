@@ -19,13 +19,17 @@
   [alert setMessageText:message];
   [alert addButtonWithTitle:@"Ok"];
   [alert runModal];
+}
+
+- (void)displayAlertWithMessageAndTerminate:(NSString*)message {
+  [self displayAlertWithMessage:message];
   [NSApp terminate:self];
 }
 
 - (void)handleAppleEvent:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)replyEvent {
   NSString* whole_link = [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
   if ([whole_link length] < 5) {
-    [self displayAlertWithMessage:[NSString stringWithFormat:@"Unexpected link: %@", whole_link]];
+    [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Unexpected link: %@", whole_link]];
     return;
   }
   NSString* url = [whole_link substringFromIndex:5];
@@ -44,17 +48,17 @@
                             options:0
                               error:&error];
   if (error || ![object isKindOfClass:[NSDictionary class]]) {
-    [self displayAlertWithMessage:@"Invalid json file"];
+    [self displayAlertWithMessageAndTerminate:@"Invalid json file"];
   }
   NSDictionary* dict = object;
   id runtime_section = dict[@"runtime"];
   if (![runtime_section isKindOfClass:[NSDictionary class]]) {
-    [self displayAlertWithMessage:@"No runtime section in json file"];
+    [self displayAlertWithMessageAndTerminate:@"No runtime section in json file"];
   }
   NSDictionary* runtime_dict = runtime_section;
   id version = runtime_dict[@"version"];
   if (![version isKindOfClass:[NSString class]]) {
-    [self displayAlertWithMessage:@"No valid version in runtime section"];
+    [self displayAlertWithMessageAndTerminate:@"No valid version in runtime section"];
   }
   *runtime_version = version;
   id args = runtime_dict[@"arguments"];
@@ -65,35 +69,50 @@
 }
 
 - (NSString*)getPathForRuntimeVersion:(NSString*)runtime_version {
-  return [NSString stringWithFormat:@"%@/OpenFin/runtime/%@", NSHomeDirectory(), runtime_version];
+  return [NSString stringWithFormat:@"%@/OpenFin/runtime/%@/OpenFin.app", NSHomeDirectory(), runtime_version];
+}
+
+- (NSString*)obtainExactVersionFromVersionString:(NSString*)runtime_version {
+  NSRegularExpression* exact_version_regexp =
+      [NSRegularExpression regularExpressionWithPattern:@"^[0-9]{1,2}\\.[0-9]{2}\\.[0-9]{2}\\.[0-9]{1,4}$"
+                                                options:0
+                                                  error:nil];
+  NSUInteger number_of_matches =
+      [exact_version_regexp numberOfMatchesInString:runtime_version
+                                            options:0
+                                              range:NSMakeRange(0, [runtime_version length])];
+  if (number_of_matches) {
+    return runtime_version;
+  }
+
+  [self displayAlertWithMessageAndTerminate:@"Only direct runtime versions are supported now."];
+  
+  return runtime_version;
 }
 
 - (void)fetchRuntimeIfNeeded:(NSString*)runtime_version {
-  // TODO: implement fetching runtime
+  if ([[NSFileManager defaultManager] fileExistsAtPath:runtime_version]) {
+    return;
+  }
+  //NSString* exact_version = [self obtainExactVersionFromVersionString:runtime_version];
+  //[self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Parsed version: %@", exact_version]];
+  //NSString* fetch_url =
 }
 
 - (void)startRuntime:(NSString*)runtime_version
        withConfigURL:(NSString*)config_url
              andArgs:(NSString*)runtime_args {
   NSString* runtime_path = [self getPathForRuntimeVersion:runtime_version];
-  NSURL* runtime_local_url = [NSURL URLWithString:[NSString stringWithFormat:@"file://%@/OpenFin.app/Contents/MacOS/OpenFin", runtime_path]];
+  NSURL* runtime_local_url = [NSURL URLWithString:[NSString stringWithFormat:@"file://%@/Contents/MacOS/OpenFin", runtime_path]];
   NSMutableArray* args = [[runtime_args componentsSeparatedByString:@" "] mutableCopy];
   [args addObject:[NSString stringWithFormat:@"--config=%@", config_url]];
-  /*
-  dispatch_async(dispatch_get_main_queue(), ^{
-    [self displayAlertWithMessage:[NSString stringWithFormat:@"Going to launch: %@, args: %@", runtime_path, config_url]];
-  });
-  */
-  
   NSError* error;
   [NSTask launchedTaskWithExecutableURL:runtime_local_url
                               arguments:args
                                   error:&error
                      terminationHandler:nil];
   if (error) {
-    dispatch_async(dispatch_get_main_queue(), ^{
-      [self displayAlertWithMessage:[NSString stringWithFormat:@"Failed to launch runtime from path: %@", runtime_path]];
-    });
+    [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Failed to launch runtime from path: %@", runtime_path]];
   } else {
     [NSApp terminate:self];
   }
@@ -123,7 +142,7 @@
         }
         dispatch_async(dispatch_get_main_queue(), ^{
           if (error) {
-            [self displayAlertWithMessage:[NSString stringWithFormat:@"Failed to fetch manifest from url: %@", url]];
+            [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Failed to fetch manifest from url: %@", url]];
           } else {
             [self onManifestFetched:url
                        asFileHandle:file_handle];
@@ -133,15 +152,10 @@
   [download_task resume];
 }
 
-- (void)registerProtocolIfNeeded {
+- (void)registerProtocol {
   CFURLRef fins_url = CFURLCreateWithString(kCFAllocatorDefault, CFSTR("fins:"), NULL);
   CFURLRef current_handler_url = LSCopyDefaultApplicationURLForURL(fins_url, kLSRolesAll, nil);
-  NSString* current_handler_str = (__bridge NSString *)(CFURLCopyFileSystemPath(current_handler_url, kCFURLPOSIXPathStyle));
-  if ([current_handler_str length]) {
-    NSLog(@"Handler is set.");
-    return;
-  }
-  NSLog(@"Handler is not set. Trying to set handler.");
+  BOOL protocol_was_registered = current_handler_url != nil;
   CFStringRef protocol = CFStringCreateWithCString(NULL, "fins", kCFStringEncodingUTF8);
   NSString* handler_bundle_id = [[NSBundle mainBundle] bundleIdentifier];
   CFStringRef bundler_cf_string = (__bridge CFStringRef)handler_bundle_id;
@@ -152,7 +166,9 @@
   } else {
     message = [NSString stringWithFormat:@"Installing handler failed with error code: %d", (int)status];
   }
-  [self displayAlertWithMessage:message];
+  if (!protocol_was_registered) {
+    [self displayAlertWithMessageAndTerminate:message];
+  }
 }
 
 - (void)launchOpenFinCliForManifestURL:(NSString*)manifestURL{
@@ -165,7 +181,7 @@
 }
 
 -(void)applicationWillFinishLaunching:(NSNotification *)notification {
-  [self registerProtocolIfNeeded];
+  [self registerProtocol];
   [[NSAppleEventManager sharedAppleEventManager] setEventHandler:self andSelector:@selector(handleAppleEvent:withReplyEvent:) forEventClass:kInternetEventClass andEventID:kAEGetURL];
 }
 
