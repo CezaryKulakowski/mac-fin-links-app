@@ -6,6 +6,9 @@
 //
 
 #import "AppDelegate.h"
+#import "FileFetcher.h"
+#import "NSDataUnzip.h"
+
 
 @interface AppDelegate ()
 
@@ -74,8 +77,8 @@
   }
 }
 
-- (NSString*)getPathForRuntimeVersion:(NSString*)runtime_version {
-  return [NSString stringWithFormat:@"%@/OpenFin/runtime/%@/OpenFin.app", NSHomeDirectory(), runtime_version];
+- (NSString*)getPathForRuntimesDirectory {
+  return [NSString stringWithFormat:@"%@/OpenFin/runtime", NSHomeDirectory()];
 }
 
 - (NSString*)obtainExactVersionFromVersionString:(NSString*)runtime_version {
@@ -96,20 +99,57 @@
   return runtime_version;
 }
 
-- (void)fetchRuntimeIfNeeded:(NSString*)runtime_version {
-  if ([[NSFileManager defaultManager] fileExistsAtPath:runtime_version]) {
-    return;
+- (void)onRuntimeFetched:(NSData*)data
+              forVersion:(NSString*)version {
+  if (!data) {
+    [self displayAlertWithMessageAndTerminate:@"Failed to fetch runtime."];
   }
-  //NSString* exact_version = [self obtainExactVersionFromVersionString:runtime_version];
-  //[self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Parsed version: %@", exact_version]];
-  //NSString* fetch_url =
+  NSData* unpacked_runtime = [data unzip];
+  //NSData* unpacked_runtime = data;
+  if (!unpacked_runtime) {
+    [self displayAlertWithMessageAndTerminate:@"Failed to unzip fetched runtime."];
+  }
+  NSString* runtimes_dir = [self getPathForRuntimesDirectory];
+  NSString* runtime_path = [NSString stringWithFormat:@"%@/%@",runtimes_dir, version];
+  if (![[NSFileManager defaultManager] createDirectoryAtPath:runtime_path
+                                 withIntermediateDirectories:YES
+                                                  attributes:nil
+                                                       error:nil]) {
+    [self displayAlertWithMessageAndTerminate:@"Failed to create runtime's directory"];
+  }
+  //NSString* filePath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"runtime.zip"];
+  if (![unpacked_runtime writeToFile:[NSString stringWithFormat:@"%@/something", runtime_path] atomically:NO]) {
+    [self displayAlertWithMessageAndTerminate:
+     [NSString stringWithFormat:@"Failed to write fetched runtime to final destination: %@", runtime_path]];
+  }
+}
+
+- (BOOL)fetchRuntimeIfNeeded:(NSString*)runtime_version {
+  if ([[NSFileManager defaultManager] fileExistsAtPath:runtime_version]) {
+    return NO;
+  }
+  /*
+   [self startRuntime:runtime_version
+        withConfigURL:url
+              andArgs:runtime_args];
+   */
+  NSString* exact_version = [self obtainExactVersionFromVersionString:runtime_version];
+  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://cdn.openfin.co/release/runtime/mac/x64/%@", exact_version]];
+  //[self displayAlertWithMessage:[NSString stringWithFormat:@"cdn url: %@", url]];
+  [[FileFetcher alloc] fetchFile:url andCallCompletionHandler:^(NSData* received_data) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self onRuntimeFetched:received_data
+                  forVersion:runtime_version];
+    });
+  }];
+  return YES;
 }
 
 - (void)startRuntime:(NSString*)runtime_version
        withConfigURL:(NSString*)config_url
              andArgs:(NSString*)runtime_args {
-  NSString* runtime_path = [self getPathForRuntimeVersion:runtime_version];
-  NSURL* runtime_local_url = [NSURL URLWithString:[NSString stringWithFormat:@"file://%@/Contents/MacOS/OpenFin", runtime_path]];
+  NSString* runtimes_dir = [self getPathForRuntimesDirectory];
+  NSURL* runtime_local_url = [NSURL URLWithString:[NSString stringWithFormat:@"file://%@/%@/OpenFin.app/Contents/MacOS/OpenFin", runtimes_dir, runtime_version]];
   NSMutableArray* args = [[runtime_args componentsSeparatedByString:@" "] mutableCopy];
   [args addObject:[NSString stringWithFormat:@"--config=%@", config_url]];
   NSError* error;
@@ -118,7 +158,7 @@
                                   error:&error
                      terminationHandler:nil];
   if (error) {
-    [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Failed to launch runtime from path: %@", runtime_path]];
+    [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Failed to launch runtime from path: %@/%@", runtimes_dir, runtime_version]];
   } else {
     [NSApp terminate:self];
   }
@@ -131,10 +171,11 @@
   [self parseManifestFile:file_handle
     andReadRuntimeVersion:&runtime_version
            andRuntimeArgs:&runtime_args];
-  [self fetchRuntimeIfNeeded:runtime_version];
-  [self startRuntime:runtime_version
-       withConfigURL:url
-             andArgs:runtime_args];
+  if (![self fetchRuntimeIfNeeded:runtime_version]) {
+    [self startRuntime:runtime_version
+         withConfigURL:url
+               andArgs:runtime_args];
+  }
 }
 
 - (void)fetchManifestFromURL:(NSString*)url {
@@ -196,10 +237,14 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-  //[self fetchManifestFromURL:@"http://localhost:9070/app.json"];
+  NSRect window_rect = NSMakeRect(0.0, 0.0, 500.0, 75.0);
+  [_window setFrame:window_rect
+            display:YES];
+  [_window center];
+  [_window setIsVisible:YES];
+  [self fetchManifestFromURL:@"http://localhost:9070/app.json"];
   //[NSApp terminate:self];
 }
-
 
 - (void)applicationWillTerminate:(NSNotification *)aNotification {
     // Insert code here to tear down your application
