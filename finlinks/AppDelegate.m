@@ -28,11 +28,17 @@
 
 - (void)handleAppleEvent:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)replyEvent {
   NSString* whole_link = [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
-  if ([whole_link length] < 5) {
-    [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Unexpected link: %@", whole_link]];
-    return;
+  NSString* protocol = [whole_link substringWithRange:NSMakeRange(0, 4)];
+  NSString* url = nil;
+  if ([protocol isEqualToString:@"fin:"]) {
+    url = [whole_link substringFromIndex:3];
+    url = [NSString stringWithFormat:@"http%@", url];
+  } else if ([protocol isEqualToString:@"fins"]) {
+    url = [whole_link substringFromIndex:4];
+    url = [NSString stringWithFormat:@"https%@", url];
+  } else {
+    [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Unknown fin link: %@", whole_link]];
   }
-  NSString* url = [whole_link substringFromIndex:5];
   [self fetchManifestFromURL:url];
 }
 
@@ -152,22 +158,26 @@
   [download_task resume];
 }
 
-- (void)registerProtocol {
-  CFURLRef fins_url = CFURLCreateWithString(kCFAllocatorDefault, CFSTR("fins:"), NULL);
+- (void)registerProtocols {
+  CFURLRef fins_url = CFURLCreateWithString(kCFAllocatorDefault, CFSTR("fin:"), NULL);
   CFURLRef current_handler_url = LSCopyDefaultApplicationURLForURL(fins_url, kLSRolesAll, nil);
   BOOL protocol_was_registered = current_handler_url != nil;
-  CFStringRef protocol = CFStringCreateWithCString(NULL, "fins", kCFStringEncodingUTF8);
+  CFStringRef fin_protocol = CFStringCreateWithCString(NULL, "fin", kCFStringEncodingUTF8);
+  CFStringRef fins_protocol = CFStringCreateWithCString(NULL, "fins", kCFStringEncodingUTF8);
   NSString* handler_bundle_id = [[NSBundle mainBundle] bundleIdentifier];
   CFStringRef bundler_cf_string = (__bridge CFStringRef)handler_bundle_id;
-  OSStatus status = LSSetDefaultHandlerForURLScheme(protocol, bundler_cf_string);
+  OSStatus status_fin = LSSetDefaultHandlerForURLScheme(fin_protocol, bundler_cf_string);
+  OSStatus status_fins = LSSetDefaultHandlerForURLScheme(fins_protocol, bundler_cf_string);
   NSString* message;
-  if ((int)status == 0) {
-    message = @"Handler has been successfully installed";
+  if ((int)status_fin == 0 && (int)status_fins == 0) {
+    message = @"Handlers has been successfully installed";
   } else {
-    message = [NSString stringWithFormat:@"Installing handler failed with error code: %d", (int)status];
+    message = [NSString stringWithFormat:@"Installing one of the handlers failed with errors code: %d, %d",
+               (int)status_fin, (int)status_fins];
   }
   if (!protocol_was_registered) {
     [self displayAlertWithMessageAndTerminate:message];
+    [NSApp terminate:self];
   }
 }
 
@@ -181,7 +191,7 @@
 }
 
 -(void)applicationWillFinishLaunching:(NSNotification *)notification {
-  [self registerProtocol];
+  [self registerProtocols];
   [[NSAppleEventManager sharedAppleEventManager] setEventHandler:self andSelector:@selector(handleAppleEvent:withReplyEvent:) forEventClass:kInternetEventClass andEventID:kAEGetURL];
 }
 
