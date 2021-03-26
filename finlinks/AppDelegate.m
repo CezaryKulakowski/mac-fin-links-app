@@ -8,11 +8,15 @@
 #import "AppDelegate.h"
 #import "FileFetcher.h"
 #import "NSDataUnzip.h"
+#import "SSZipArchive.h"
 
 
 @interface AppDelegate ()
 
 @property (strong) IBOutlet NSWindow *window;
+@property (nonatomic) NSString* manifest_url;
+@property (nonatomic) NSString* runtime_args;
+@property (nonatomic) NSString* runtime_version;
 @end
 
 @implementation AppDelegate
@@ -32,22 +36,19 @@
 - (void)handleAppleEvent:(NSAppleEventDescriptor *)event withReplyEvent:(NSAppleEventDescriptor *)replyEvent {
   NSString* whole_link = [[event paramDescriptorForKeyword:keyDirectObject] stringValue];
   NSString* protocol = [whole_link substringWithRange:NSMakeRange(0, 4)];
-  NSString* url = nil;
   if ([protocol isEqualToString:@"fin:"]) {
-    url = [whole_link substringFromIndex:3];
-    url = [NSString stringWithFormat:@"http%@", url];
+    _manifest_url = [whole_link substringFromIndex:3];
+    _manifest_url = [NSString stringWithFormat:@"http%@", _manifest_url];
   } else if ([protocol isEqualToString:@"fins"]) {
-    url = [whole_link substringFromIndex:4];
-    url = [NSString stringWithFormat:@"https%@", url];
+    _manifest_url = [whole_link substringFromIndex:4];
+    _manifest_url = [NSString stringWithFormat:@"https%@", _manifest_url];
   } else {
     [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Unknown fin link: %@", whole_link]];
   }
-  [self fetchManifestFromURL:url];
+  [self fetchManifest];
 }
 
-- (void)parseManifestFile:(NSFileHandle*)file_handle
-    andReadRuntimeVersion:(NSString**)runtime_version
-          andRuntimeArgs:(NSString**)runtime_args {
+- (void)parseManifestFile:(NSFileHandle*)file_handle {
   NSData* file_content = [file_handle availableData];
   NSInputStream* stream = [NSInputStream inputStreamWithData:file_content];
   [stream open];
@@ -69,11 +70,11 @@
   if (![version isKindOfClass:[NSString class]]) {
     [self displayAlertWithMessageAndTerminate:@"No valid version in runtime section"];
   }
-  *runtime_version = version;
+  _runtime_version = [self obtainExactVersionFromVersionString:version];
   id args = runtime_dict[@"arguments"];
-  *runtime_args = nil;
+  _runtime_args = nil;
   if ([args isKindOfClass:[NSString class]]) {
-    *runtime_args = args;
+    _runtime_args = args;
   }
 }
 
@@ -81,106 +82,104 @@
   return [NSString stringWithFormat:@"%@/OpenFin/runtime", NSHomeDirectory()];
 }
 
-- (NSString*)obtainExactVersionFromVersionString:(NSString*)runtime_version {
+- (NSString*)getLocalPathForRuntime {
+  return [NSString stringWithFormat:@"%@/%@", [self getPathForRuntimesDirectory], _runtime_version];
+}
+
+- (NSString*)obtainExactVersionFromVersionString:(NSString*)version {
   NSRegularExpression* exact_version_regexp =
       [NSRegularExpression regularExpressionWithPattern:@"^[0-9]{1,2}\\.[0-9]{2}\\.[0-9]{2}\\.[0-9]{1,4}$"
                                                 options:0
                                                   error:nil];
   NSUInteger number_of_matches =
-      [exact_version_regexp numberOfMatchesInString:runtime_version
+      [exact_version_regexp numberOfMatchesInString:version
                                             options:0
-                                              range:NSMakeRange(0, [runtime_version length])];
+                                              range:NSMakeRange(0, [version length])];
   if (number_of_matches) {
-    return runtime_version;
+    return version;
   }
 
+  
+  
   [self displayAlertWithMessageAndTerminate:@"Only direct runtime versions are supported now."];
   
-  return runtime_version;
+  return version;
 }
 
-- (void)onRuntimeFetched:(NSData*)data
-              forVersion:(NSString*)version {
+- (void)onRuntimeFetched:(NSData*)data {
   if (!data) {
     [self displayAlertWithMessageAndTerminate:@"Failed to fetch runtime."];
   }
-  NSData* unpacked_runtime = [data unzip];
-  //NSData* unpacked_runtime = data;
-  if (!unpacked_runtime) {
-    [self displayAlertWithMessageAndTerminate:@"Failed to unzip fetched runtime."];
-  }
-  NSString* runtimes_dir = [self getPathForRuntimesDirectory];
-  NSString* runtime_path = [NSString stringWithFormat:@"%@/%@",runtimes_dir, version];
+  NSString* runtime_path = [self getLocalPathForRuntime];
   if (![[NSFileManager defaultManager] createDirectoryAtPath:runtime_path
                                  withIntermediateDirectories:YES
                                                   attributes:nil
                                                        error:nil]) {
     [self displayAlertWithMessageAndTerminate:@"Failed to create runtime's directory"];
   }
-  //NSString* filePath = [NSTemporaryDirectory() stringByAppendingPathComponent:@"runtime.zip"];
-  if (![unpacked_runtime writeToFile:[NSString stringWithFormat:@"%@/something", runtime_path] atomically:NO]) {
+  NSString* fetched_zip_location = [NSTemporaryDirectory() stringByAppendingPathComponent:@"runtime.zip"];
+  if (![data writeToFile:fetched_zip_location atomically:NO]) {
     [self displayAlertWithMessageAndTerminate:
-     [NSString stringWithFormat:@"Failed to write fetched runtime to final destination: %@", runtime_path]];
+        [NSString stringWithFormat:@"Failed to write fetched runtime to temporary location"]];
   }
+  NSError* unzip_error;
+  [SSZipArchive unzipFileAtPath:fetched_zip_location
+                  toDestination:runtime_path
+                      overwrite:NO
+                       password:nil
+                          error:&unzip_error];
+  if (unzip_error) {
+    [self displayAlertWithMessageAndTerminate:
+       [NSString stringWithFormat:@"Failed to unzip fetched runtime. Error code: %ld", [unzip_error code]]];
+  }
+  [self startRuntime];
 }
 
-- (BOOL)fetchRuntimeIfNeeded:(NSString*)runtime_version {
-  if ([[NSFileManager defaultManager] fileExistsAtPath:runtime_version]) {
+- (BOOL)fetchRuntimeIfNeeded {
+  NSString* local_runtime = [self getLocalPathForRuntime];
+  if ([[NSFileManager defaultManager] fileExistsAtPath:local_runtime]) {
     return NO;
   }
-  /*
-   [self startRuntime:runtime_version
-        withConfigURL:url
-              andArgs:runtime_args];
-   */
-  NSString* exact_version = [self obtainExactVersionFromVersionString:runtime_version];
-  NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"https://cdn.openfin.co/release/runtime/mac/x64/%@", exact_version]];
   //[self displayAlertWithMessage:[NSString stringWithFormat:@"cdn url: %@", url]];
-  [[FileFetcher alloc] fetchFile:url andCallCompletionHandler:^(NSData* received_data) {
+  [[FileFetcher alloc] fetchRuntime:_runtime_version
+                           fromHost:@"https://cdn.openfin.co/release/runtime/mac/x64"
+                     usingWindow:_window
+        andCallCompletionHandler:^(NSData* received_data) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      [self onRuntimeFetched:received_data
-                  forVersion:runtime_version];
+      [self onRuntimeFetched:received_data];
     });
   }];
   return YES;
 }
 
-- (void)startRuntime:(NSString*)runtime_version
-       withConfigURL:(NSString*)config_url
-             andArgs:(NSString*)runtime_args {
+- (void)startRuntime {
   NSString* runtimes_dir = [self getPathForRuntimesDirectory];
-  NSURL* runtime_local_url = [NSURL URLWithString:[NSString stringWithFormat:@"file://%@/%@/OpenFin.app/Contents/MacOS/OpenFin", runtimes_dir, runtime_version]];
-  NSMutableArray* args = [[runtime_args componentsSeparatedByString:@" "] mutableCopy];
-  [args addObject:[NSString stringWithFormat:@"--config=%@", config_url]];
+  NSURL* runtime_local_url = [NSURL URLWithString:[NSString stringWithFormat:@"file://%@/%@/OpenFin.app/Contents/MacOS/OpenFin", runtimes_dir, _runtime_version]];
+  NSMutableArray* args = [[_runtime_args componentsSeparatedByString:@" "] mutableCopy];
+  [args addObject:[NSString stringWithFormat:@"--config=%@", _manifest_url]];
   NSError* error;
   [NSTask launchedTaskWithExecutableURL:runtime_local_url
                               arguments:args
                                   error:&error
                      terminationHandler:nil];
   if (error) {
-    [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Failed to launch runtime from path: %@/%@", runtimes_dir, runtime_version]];
+    [self displayAlertWithMessageAndTerminate:
+       [NSString stringWithFormat:@"Failed to launch runtime from path: %@/%@", runtimes_dir, _runtime_version]];
   } else {
     [NSApp terminate:self];
   }
 }
 
-- (void)onManifestFetched:(NSString*)url
-             asFileHandle:(NSFileHandle*)file_handle {
-  NSString* runtime_version;
-  NSString* runtime_args;
-  [self parseManifestFile:file_handle
-    andReadRuntimeVersion:&runtime_version
-           andRuntimeArgs:&runtime_args];
-  if (![self fetchRuntimeIfNeeded:runtime_version]) {
-    [self startRuntime:runtime_version
-         withConfigURL:url
-               andArgs:runtime_args];
+- (void)onManifestFetchedAsFileHandle:(NSFileHandle*)file_handle {
+  [self parseManifestFile:file_handle];
+  if (![self fetchRuntimeIfNeeded]) {
+    [self startRuntime];
   }
 }
 
-- (void)fetchManifestFromURL:(NSString*)url {
+- (void)fetchManifest {
   NSURLSessionDownloadTask* download_task =
-      [[NSURLSession sharedSession] downloadTaskWithURL:[NSURL URLWithString:url]
+      [[NSURLSession sharedSession] downloadTaskWithURL:[NSURL URLWithString:_manifest_url]
                                       completionHandler:^(NSURL* location, NSURLResponse* response, NSError* error) {
         NSFileHandle* file_handle = nil;
         if (!error) {
@@ -189,10 +188,10 @@
         }
         dispatch_async(dispatch_get_main_queue(), ^{
           if (error) {
-            [self displayAlertWithMessageAndTerminate:[NSString stringWithFormat:@"Failed to fetch manifest from url: %@", url]];
+            [self displayAlertWithMessageAndTerminate:
+               [NSString stringWithFormat:@"Failed to fetch manifest from url: %@", self->_manifest_url]];
           } else {
-            [self onManifestFetched:url
-                       asFileHandle:file_handle];
+            [self onManifestFetchedAsFileHandle:file_handle];
           }
         });
       }];
@@ -237,12 +236,8 @@
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
-  NSRect window_rect = NSMakeRect(0.0, 0.0, 500.0, 75.0);
-  [_window setFrame:window_rect
-            display:YES];
-  [_window center];
-  [_window setIsVisible:YES];
-  [self fetchManifestFromURL:@"http://localhost:9070/app.json"];
+  //_manifest_url = @"http://localhost:9070/app.json";
+  //[self fetchManifest];
   //[NSApp terminate:self];
 }
 

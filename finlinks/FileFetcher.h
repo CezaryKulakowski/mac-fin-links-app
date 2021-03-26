@@ -11,6 +11,8 @@
 
 typedef void(^FetchFileCompletionHandler)(NSData*);
 
-- (void)fetchFile:(NSURL*)url
-   andCallCompletionHandler:(FetchFileCompletionHandler)handler;
+- (void)fetchRuntime:(NSString*)version
+            fromHost:(NSString*)host
+         usingWindow:(NSWindow*)window
+    andCallCompletionHandler:(FetchFileCompletionHandler)handler;
 @end

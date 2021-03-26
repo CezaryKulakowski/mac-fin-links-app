@@ -9,43 +9,13 @@
 
 #import "FileFetcher.h"
 
-@interface ProgressIndicator : NSView
-@property (nonatomic) NSProgressIndicator* progress_indicator;
-@end
-
-@implementation ProgressIndicator
-
-- (void)initWithMaxValue:(NSInteger)max_value {
-  NSWindow* window = [NSApp mainWindow];
-  NSRect window_rect = [window frame];
-  NSRect indicator_frame = NSMakeRect(0.0f, 0.0f, window_rect.size.width, 15.0);
-  NSRect text_frame = NSMakeRect(0.0f, 0.0, window_rect.size.width, 50.0);
-  _progress_indicator = [[NSProgressIndicator alloc] initWithFrame:indicator_frame];
-  //NSTextField* text_field = [[NSTextField alloc] initWithFrame:text_frame];
-  NSTextField* text_field = [NSTextField textFieldWithString:@"Fetching runtime"];
-  [text_field setFrame:text_frame];
-  [_progress_indicator setStyle:NSProgressIndicatorStyleBar];
-  [_progress_indicator setHidden:NO];
-  [_progress_indicator setIndeterminate:NO];
-  [_progress_indicator setBezeled:YES];
-  window.styleMask &= ~NSWindowStyleMaskResizable;
-  [_progress_indicator setMaxValue:max_value];
-  [[window contentView] addSubview:text_field];
-  [[window contentView] addSubview:_progress_indicator];
-}
-
-- (void)incrementBy:(NSInteger)value {
-  [_progress_indicator incrementBy:value];
-}
-
-@end
 
 @interface FileFetcher ()
 
 @property (nonatomic, retain) NSMutableData* data_to_download;
 @property (nonatomic) float download_size;
 @property (nonatomic) FetchFileCompletionHandler completion_handler;
-@property (nonatomic) ProgressIndicator* progress_indicator;
+@property (nonatomic) NSProgressIndicator* progress_indicator;
 
 @end
 
@@ -58,9 +28,43 @@
   [alert runModal];
 }
 
-- (void)fetchFile:(NSURL*)url
+- (void)setWindowAndProgressBar:(NSWindow*)window
+              forRuntimeVersion:(NSString*)version{
+  NSRect window_rect = NSMakeRect(0.0, 0.0, 500.0, 75.0);
+  [window setFrame:window_rect
+            display:YES];
+  [window center];
+  window.styleMask &= ~NSWindowStyleMaskResizable;
+  window.styleMask |= NSWindowStyleMaskFullSizeContentView;
+  [window setTitleVisibility:NSWindowTitleHidden];
+  [window setTitlebarAppearsTransparent:YES];
+  [[window standardWindowButton:NSWindowCloseButton] setHidden:YES];
+  [[window standardWindowButton:NSWindowMiniaturizeButton] setHidden:YES];
+  [[window standardWindowButton:NSWindowZoomButton] setHidden:YES];
+  [window setIsVisible:YES];
+  NSRect indicator_frame = NSMakeRect(0.0f, 0.0f, window_rect.size.width, 15.0);
+  NSRect text_frame = NSMakeRect(0.0f, 0.0f, window_rect.size.width, 50.0);
+  _progress_indicator = [[NSProgressIndicator alloc] initWithFrame:indicator_frame];
+  NSString* textToDisplay = [NSString stringWithFormat:@"Fetching runtime %@", version];
+  NSTextField* text_field = [NSTextField textFieldWithString:textToDisplay];
+  [text_field setFrame:text_frame];
+  [text_field setAlignment:NSTextAlignmentCenter];
+  [_progress_indicator setStyle:NSProgressIndicatorStyleBar];
+  [_progress_indicator setHidden:NO];
+  [_progress_indicator setIndeterminate:NO];
+  [_progress_indicator setBezeled:YES];
+  [[window contentView] addSubview:text_field];
+  [[window contentView] addSubview:_progress_indicator];
+}
+
+- (void)fetchRuntime:(NSString*)version
+            fromHost:(NSString*)host
+         usingWindow:(NSWindow*)window
 andCallCompletionHandler:(FetchFileCompletionHandler)handler {
+  [self setWindowAndProgressBar:window
+              forRuntimeVersion:version];
   _completion_handler = handler;
+  NSURL* url = [NSURL URLWithString:[NSString stringWithFormat:@"%@/%@", host, version]];
   NSURLSession* url_session = [NSURLSession sessionWithConfiguration:[NSURLSessionConfiguration defaultSessionConfiguration]
                                                             delegate:self
                                                        delegateQueue:[NSOperationQueue mainQueue]];
@@ -73,11 +77,6 @@ andCallCompletionHandler:(FetchFileCompletionHandler)handler {
   _completion_handler(nil);
 }
 
-- (void)setProgressIndicatorWithMaxValue:(NSInteger)max_value {
-  _progress_indicator = [ProgressIndicator alloc];
-  [_progress_indicator initWithMaxValue:max_value];
-}
-
 - (void)URLSession:(NSURLSession*)session
           dataTask:(NSURLSessionDataTask*)dataTask
 didReceiveResponse:(NSURLResponse*)response
@@ -85,7 +84,7 @@ didReceiveResponse:(NSURLResponse*)response
   completionHandler(NSURLSessionResponseAllow);
   //completionHandler(NSURLSessionResponseCancel);
   _download_size = [response expectedContentLength];
-  [self setProgressIndicatorWithMaxValue:_download_size];
+  [_progress_indicator setMaxValue:_download_size];
   _data_to_download = [[NSMutableData alloc] init];
 }
 
