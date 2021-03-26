@@ -67,11 +67,13 @@ typedef void(^ManifestParsedHandler)(NSString*);
   id runtime_section = dict[@"runtime"];
   if (![runtime_section isKindOfClass:[NSDictionary class]]) {
     handler(@"no runtime section in manifest");
+    return;
   }
   NSDictionary* runtime_dict = runtime_section;
   id version = runtime_dict[@"version"];
   if (![version isKindOfClass:[NSString class]]) {
     handler(@"no runtime version in manifest");
+    return;
   }
   id args = runtime_dict[@"arguments"];
   _runtime_args = nil;
@@ -214,7 +216,7 @@ typedef void(^ManifestParsedHandler)(NSString*);
 }
 
 - (void)onManifestFetchedAsFileHandle:(NSFileHandle*)file_handle {
-  [self parseManifestFile:file_handle
+[self parseManifestFile:file_handle
  andCallCompletionHandler:^(NSString* error) {
     dispatch_async(dispatch_get_main_queue(), ^{
       [self onManifestParsedWithResult:error];
