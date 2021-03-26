@@ -13,6 +13,8 @@
 
 @interface AppDelegate ()
 
+typedef void(^ManifestParsedHandler)(NSString*);
+
 @property (strong) IBOutlet NSWindow *window;
 @property (nonatomic) NSString* manifest_url;
 @property (nonatomic) NSString* runtime_args;
@@ -48,7 +50,8 @@
   [self fetchManifest];
 }
 
-- (void)parseManifestFile:(NSFileHandle*)file_handle {
+- (void)parseManifestFile:(NSFileHandle*)file_handle
+ andCallCompletionHandler:(ManifestParsedHandler)handler{
   NSData* file_content = [file_handle availableData];
   NSInputStream* stream = [NSInputStream inputStreamWithData:file_content];
   [stream open];
@@ -63,19 +66,20 @@
   NSDictionary* dict = object;
   id runtime_section = dict[@"runtime"];
   if (![runtime_section isKindOfClass:[NSDictionary class]]) {
-    [self displayAlertWithMessageAndTerminate:@"No runtime section in json file"];
+    handler(@"no runtime section in manifest");
   }
   NSDictionary* runtime_dict = runtime_section;
   id version = runtime_dict[@"version"];
   if (![version isKindOfClass:[NSString class]]) {
-    [self displayAlertWithMessageAndTerminate:@"No valid version in runtime section"];
+    handler(@"no runtime version in manifest");
   }
-  _runtime_version = [self obtainExactVersionFromVersionString:version];
   id args = runtime_dict[@"arguments"];
   _runtime_args = nil;
   if ([args isKindOfClass:[NSString class]]) {
     _runtime_args = args;
   }
+  [self obtainExactVersionFromVersionString:version
+                   andCallCompletionHandler:handler];
 }
 
 - (NSString*)getPathForRuntimesDirectory {
@@ -86,7 +90,33 @@
   return [NSString stringWithFormat:@"%@/%@", [self getPathForRuntimesDirectory], _runtime_version];
 }
 
-- (NSString*)obtainExactVersionFromVersionString:(NSString*)version {
+- (void)fetchVersionForChannel:(NSString*)channel_name
+      andCallCompletionHandler:(ManifestParsedHandler)handler {
+  NSURL* url = [NSURL URLWithString:
+                [NSString stringWithFormat:@"https://cdn.openfin.co/release/runtime/%@", channel_name]];
+  NSURLSessionDownloadTask* download_task =
+      [[NSURLSession sharedSession] downloadTaskWithURL:url
+                                      completionHandler:^(NSURL* location, NSURLResponse* response, NSError* error) {
+        if (error) {
+          handler([NSString stringWithFormat: @"failed to get version for channel %@", channel_name]);
+          return;
+        }
+        NSFileHandle* file_handle = [NSFileHandle fileHandleForReadingFromURL:location
+                                                                        error:nil];
+        NSData* file_content = [file_handle availableData];
+        NSString* version = [[NSString alloc] initWithData:file_content encoding:NSASCIIStringEncoding];
+        if (!version) {
+          handler([NSString stringWithFormat:@"failed to parse version string for channel %@", channel_name]);
+          return;
+        }
+        self->_runtime_version = version;
+        handler(nil);
+      }];
+  [download_task resume];
+}
+
+- (void)obtainExactVersionFromVersionString:(NSString*)version
+                   andCallCompletionHandler:(ManifestParsedHandler)handler {
   NSRegularExpression* exact_version_regexp =
       [NSRegularExpression regularExpressionWithPattern:@"^[0-9]{1,2}\\.[0-9]{2}\\.[0-9]{2}\\.[0-9]{1,4}$"
                                                 options:0
@@ -96,14 +126,17 @@
                                             options:0
                                               range:NSMakeRange(0, [version length])];
   if (number_of_matches) {
-    return version;
+    _runtime_version = version;
+    handler(nil);
+    return;
   }
-
-  
-  
-  [self displayAlertWithMessageAndTerminate:@"Only direct runtime versions are supported now."];
-  
-  return version;
+  NSArray* channels = @[@"stable", @"beta", @"canary", @"canary-next"];
+  if ([channels containsObject:version]) {
+    [self fetchVersionForChannel:version
+        andCallCompletionHandler:handler];
+    return;
+  }
+  handler([NSString stringWithFormat:@"runtime version not valid %@", version]);
 }
 
 - (void)onRuntimeFetched:(NSData*)data {
@@ -170,11 +203,23 @@
   }
 }
 
-- (void)onManifestFetchedAsFileHandle:(NSFileHandle*)file_handle {
-  [self parseManifestFile:file_handle];
+- (void)onManifestParsedWithResult:(NSString*)error {
+  if (error) {
+    [self displayAlertWithMessageAndTerminate:
+       [NSString stringWithFormat:@"Failed to parse manifest: %@", error]];
+  }
   if (![self fetchRuntimeIfNeeded]) {
     [self startRuntime];
   }
+}
+
+- (void)onManifestFetchedAsFileHandle:(NSFileHandle*)file_handle {
+  [self parseManifestFile:file_handle
+ andCallCompletionHandler:^(NSString* error) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      [self onManifestParsedWithResult:error];
+    });
+  }];
 }
 
 - (void)fetchManifest {
@@ -237,6 +282,7 @@
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification {
   //_manifest_url = @"http://localhost:9070/app.json";
+  //_manifest_url = @"https://cdn.openfin.co/process-manager/app.json";
   //[self fetchManifest];
   //[NSApp terminate:self];
 }
